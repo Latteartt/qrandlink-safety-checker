@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QR & URL Safety Checker</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(to bottom, #00c6ff, #0072ff);
+      background-attachment: fixed;
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      animation: fadeIn 0.6s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .container {
+      width: 90%;
+      max-width: 600px;
+      margin: 3rem auto;
+      background: white;
+      padding: 2rem;
+      border-radius: 20px;
+      box-shadow: 0 4px 30px rgba(0,0,0,0.3);
+      text-align: center;
+      animation: floatIn 0.8s ease-in-out;
+    }
+    @keyframes floatIn {
+      from { transform: scale(0.9); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+    h2, h3 {
+      margin-bottom: 1rem;
+      color: #333;
+    }
+    select, input[type="text"], input[type="file"], button {
+      width: 90%;
+      padding: 0.75rem;
+      margin: 0.5rem 0;
+      font-size: 1rem;
+      border-radius: 10px;
+      border: 1px solid #ccc;
+    }
+    button {
+      background: #3f51b5;
+      color: white;
+      cursor: pointer;
+      transition: background 0.3s, transform 0.2s;
+    }
+    button:hover {
+      background: #303f9f;
+      transform: translateY(-2px);
+    }
+    .safe { color: green; font-weight: bold; }
+    .warning { color: orange; font-weight: bold; }
+    .danger { color: red; font-weight: bold; }
+    #dangerList ul {
+      text-align: left;
+      margin-top: 1rem;
+      padding-left: 1.5rem;
+    }
+    .link-item {
+      padding: 0.3rem 0;
+    }
+    a.report-link {
+      display: inline-block;
+      margin-top: 1rem;
+      text-decoration: none;
+      color: #3f51b5;
+      transition: color 0.2s;
+    }
+    a.report-link:hover {
+      text-decoration: underline;
+      color: #1a237e;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>🔍 ระบบตรวจสอบความปลอดภัยของ QR และลิงก์</h2>
+
+    <select id="modeSelect" onchange="changeMode()">
+      <option value="camera">📷 สแกนด้วยกล้อง</option>
+      <option value="upload">🖼️ อัปโหลดรูป QR</option>
+      <option value="manual">🔗 กรอกลิงก์ด้วยตัวเอง</option>
+    </select>
+
+    <div id="inputSection"></div>
+
+    <div id="result"></div>
+
+    <div id="dangerPrompt" style="display:none;">
+      <p>⚠️ ต้องการบันทึกลิงก์นี้ไว้เตือนผู้อื่นไหม?</p>
+      <button onclick="saveDangerLink()">✅ บันทึกลงระบบเตือน</button>
+      <button onclick="hidePrompt()">❌ ไม่ต้องการ</button>
+    </div>
+
+    <a href="danger-report.html" class="report-link">📄 ดูรายงานลิงก์อันตรายทั้งหมด</a>
+  </div>
+
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <script src="https://unpkg.com/qr-scanner/qr-scanner.umd.min.js"></script>
+  <script>
+    let html5QrCode;
+    let lastDangerousUrl = "";
+
+    function changeMode() {
+      const mode = document.getElementById("modeSelect").value;
+      const section = document.getElementById("inputSection");
+      section.innerHTML = "";
+      document.getElementById("result").innerHTML = "";
+      document.getElementById("dangerPrompt").style.display = "none";
+
+      if (mode === "camera") {
+        section.innerHTML = <div id="reader" style="width:300px; margin:auto"></div>;
+        html5QrCode = new Html5Qrcode("reader");
+        Html5Qrcode.getCameras().then(devices => {
+          if (devices.length) {
+            html5QrCode.start(
+              { facingMode: "environment" },
+              { fps: 10, qrbox: 250 },
+              qrCodeMessage => {
+                html5QrCode.stop();
+                analyzeLink(qrCodeMessage);
+              },
+              error => {}
+            );
+          }
+        });
+      } else if (mode === "upload") {
+        section.innerHTML = <input type="file" accept="image/*" onchange="readQRfromFile(event)">;
+      } else if (mode === "manual") {
+        section.innerHTML = 
+          <input type="text" id="manualUrl" placeholder="กรอกลิงก์">
+          <button onclick="analyzeManual()">ตรวจสอบ</button>
+        ;
+      }
+    }
+
+    function readQRfromFile(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const img = new Image();
+      const reader = new FileReader();
+      reader.onload = () => {
+        img.onload = () => {
+          QrScanner.scanImage(img).then(result => {
+            analyzeLink(result);
+          }).catch(() => {
+            document.getElementById("result").innerHTML = "❌ ไม่พบ QR ที่อ่านได้";
+          });
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function analyzeManual() {
+      const url = document.getElementById("manualUrl").value;
+      analyzeLink(url);
+    }
+
+    function analyzeLink(url) {
+      let level = "safe";
+      let score = 0;
+      let reason = "ไม่มีคำอันตราย พบว่าเป็นลิงก์ทั่วไป";
+
+      const riskWords = ["login", "verify", "click", "free", "win", "reset", "gift"];
+      const riskyDomains = ["bit.ly", "rb.gy", "tinyurl", ".tk", ".xyz", ".ru"];
+
+      for (const word of riskWords) {
+        if (url.toLowerCase().includes(word)) {
+          score += 20;
+        }
+      }
+
+      for (const d of riskyDomains) {
+        if (url.toLowerCase().includes(d)) {
+          score += 40;
+        }
+      }
+
+      if (score >= 60) {
+        level = "danger";
+        reason = "พบหลายปัจจัยที่บ่งบอกว่าอันตราย";
+      } else if (score >= 20) {
+        level = "warning";
+        reason = "มีองค์ประกอบบางอย่างที่น่าสงสัย";
+      }
+
+      const result = document.getElementById("result");
+      result.innerHTML = 
+        <h3>ผลการวิเคราะห์</h3>
+        <p>🔗 <a href="${url}" target="_blank">${url}</a></p>
+        <p class="${level}"><strong>
+          ${level === "safe" ? "✅ ปลอดภัย" : level === "warning" ? "⚠️ น่าสงสัย" : "❌ อันตราย"}
+        </strong><br>ความเสี่ยงประมาณ ${score}%<br>${reason}</p>
+      ;
+
+      if (level === "danger") {
+        lastDangerousUrl = url;
+        document.getElementById("dangerPrompt").style.display = "block";
+      }
+    }
+
+    function hidePrompt() {
+      document.getElementById("dangerPrompt").style.display = "none";
+    }
+
+    function saveDangerLink() {
+      let stored = JSON.parse(localStorage.getItem("dangerLinks") || "[]");
+      if (!stored.includes(lastDangerousUrl)) {
+        stored.push(lastDangerousUrl);
+        localStorage.setItem("dangerLinks", JSON.stringify(stored));
+      }
+      hidePrompt();
+    }
+
+    changeMode();
+  </script>
+</body>
+</html>
